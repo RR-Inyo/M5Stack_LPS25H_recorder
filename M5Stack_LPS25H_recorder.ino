@@ -18,6 +18,7 @@ LPS25HB sensor;
 File file;
 char fileName[16];
 bool isRecording = false;
+float t_rec = 0.0;
 
 // Define constant
 const auto COLOR_7SEG_OFF = M5.Display.color888(32, 32, 32);
@@ -79,7 +80,11 @@ void measure(void *pvParameters) {
     }
     
     // Send data to serial communication
-    Serial.printf("%5.2f degC, %7.2 hPa\n", t, p);
+    Serial.printf("%5.2f degC, %7.2f hPa", t, p);
+    if (isRecording) {
+      Serial.printf(", %6.1f sec", t_rec);
+    }
+    Serial.printf("\n");
 
     // Define buffer to store values
     char buf[16];
@@ -94,7 +99,7 @@ void measure(void *pvParameters) {
     M5.Display.printf("8888.88");
     M5.Display.drawRect(230 - widthText - FRAME_MARGIN + FRAME_OFFSET_X, 48 - FRAME_MARGIN + FRAME_OFFSET_Y, widthText + FRAME_MARGIN * 2, heightText + FRAME_MARGIN * 2, COLOR_7SEG_FRAME);
     M5.Display.setTextColor(COLOR_7SEG_ON, COLOR_7SEG_ON);
-    sprintf(buf, "%4.2f", t);
+    sprintf(buf, "%5.2f", t);
     widthText = M5.Display.textWidth(buf);
     M5.Display.setCursor(230 - widthText, 50);
     M5.Display.printf(buf);
@@ -103,15 +108,14 @@ void measure(void *pvParameters) {
     widthText = M5.Display.textWidth("8888.88");
     heightText = M5.Display.fontHeight();
     M5.Display.setTextColor(COLOR_7SEG_OFF, TFT_BLACK);
-    M5.Display.setCursor(230 - widthText, 145);
+    M5.Display.setCursor(230 - widthText, 142);
     M5.Display.printf("8888.88");
-    M5.Display.drawRect(230 - widthText - FRAME_MARGIN + FRAME_OFFSET_X, 143 - FRAME_MARGIN + FRAME_OFFSET_Y, widthText + FRAME_MARGIN * 2, heightText + FRAME_MARGIN * 2, COLOR_7SEG_FRAME);
+    M5.Display.drawRect(230 - widthText - FRAME_MARGIN + FRAME_OFFSET_X, 140 - FRAME_MARGIN + FRAME_OFFSET_Y, widthText + FRAME_MARGIN * 2, heightText + FRAME_MARGIN * 2, COLOR_7SEG_FRAME);
     M5.Display.setTextColor(COLOR_7SEG_ON, COLOR_7SEG_ON);
     sprintf(buf, "%7.2f", p);
     widthText = M5.Display.textWidth(buf);
-    M5.Display.setCursor(230 - widthText, 145);
-    M5.Display.printf("%7.2f", p);
-    M5.Display.endWrite();
+    M5.Display.setCursor(230 - widthText, 142);
+    M5.Display.printf(buf);
 
     // Show battery level on LCD screen
     int battLevel = M5.Power.getBatteryLevel();
@@ -153,16 +157,22 @@ void measure(void *pvParameters) {
     for (int i = 0; i < numBattBlocks; i++) {
       M5.Display.fillRect(302 + i * 3, 6, 2, 8, colorBattBlocks);
     }
- 
-    // Turn off measurement mark on display
-    M5.Display.fillCircle(8, 8, 5, COLOR_7SEG_OFF);
 
     // Record to microSD card if flag is raised
-    if (isRecording) {
+    if (isRecording) {    
+      // Release LCD control to open file
+      M5.Display.endWrite();
+
       // Write to microSD
       file = SD.open(fileName, FILE_APPEND);
-      file.printf("%6.3f, %7.3f\n", t, p);
+      if (t_rec == 0.0) {
+        file.printf("Time [s], Temperature [degC], Pressure [hPa]\n");
+      }
+      file.printf("%6.1f, %6.3f, %8.3f\n", t_rec, t, p);
       file.close();
+
+      // Acquire LCD control again after closing file
+      M5.Display.startWrite();
 
       // Show message on LCD
       M5.Display.setFont(&fonts::Font2);
@@ -170,17 +180,23 @@ void measure(void *pvParameters) {
       M5.Display.setCursor(20, 201);
       M5.Display.printf("Recording to ");
       M5.Display.printf(fileName);
-      M5.Display.printf("...");
+      M5.Display.printf(", %6.1f sec...", t_rec);
+
+      // Increment recording time
+      t_rec += 0.5;
     }
     else {
       // Delete message on LCD
       M5.Display.setFont(&fonts::Font2);
       M5.Display.setTextColor(COLOR_7SEG_ON, COLOR_7SEG_OFF);
-      char buf[] = "Recording to /R0000.CSV...";
+      char buf[] = "Recording to /R0000.CSV, 00000.0 sec...";
       widthText = M5.Display.textWidth(buf);
       heightText = M5.Display.fontHeight();
       M5.Display.fillRect(20, 201, widthText, heightText, COLOR_7SEG_OFF);
     }
+
+    // Clear measurement mark on display
+    M5.Display.fillCircle(8, 8, 5, COLOR_7SEG_OFF);
 
     // Release LCD control
     M5.Display.endWrite();
@@ -206,25 +222,47 @@ void setup() {
 
   // Initialize microSD card
   while (!SD.begin(GPIO_NUM_4, SPI, 15000000)) {
-    Serial.println("Mounting microSD card...");
+    // Show message to serial communication
+    Serial.println("microSD card not found.");
+    Serial.println("");
+
+    // Show message on LCD screen
+    M5.Display.setFont(&fonts::Font4);
+    M5.Display.setTextColor(COLOR_7SEG_ON, COLOR_7SEG_OFF);
+    M5.Display.setCursor(10, 10);
+    M5.Display.printf("microSD card not found.");
+
+    // Wait for a while for microSD to be mounted
     delay(500);
   }
 
   // Set up I2C bus
   Wire.begin();
   
-  // Set up LPS25H
-  // pinMode(SDA, INPUT_PULLUP);
-  // pinMode(SCL, INPUT_PULLUP);
+  // Begin LPS25H sensor
   sensor.begin(Wire, LPS25HB_I2C_ADDR_DEF);
- 
-  delay(100);
-  if (sensor.isConnected() == false)
-  {
-    Serial.println("LPS25H not found.");
-    Serial.println("");
-    while (true) {
-      // Infinate loop
+  
+  // Confirm LPS25H connection
+  while (true) {
+    if (!sensor.isConnected()) {
+      // Show message to serial communication
+      Serial.println("LPS25H not found.");
+      Serial.println("");
+
+      // Show message to LCD screen
+      M5.Display.setFont(&fonts::Font4);
+      M5.Display.setTextColor(COLOR_7SEG_ON, COLOR_7SEG_OFF);
+      M5.Display.setCursor(10, 50);
+      M5.Display.printf("LPS25H not found.");
+
+      // Wait for a while for LPS25H to be connected
+      delay(500);
+      continue;
+    }
+    else {
+      // Begin sensor again, just in case...
+      sensor.begin(Wire, LPS25HB_I2C_ADDR_DEF);
+      break;
     }
   }
 
@@ -232,23 +270,29 @@ void setup() {
   uint8_t offsetPressure[2] = {0xa0, 0x00};
   sensor.write(LPS25HB_REG_RPDS_L, offsetPressure, 2);
 
+  // Clear display first
+  M5.Display.clearDisplay();
+
+  // Acquire LCD control
+  M5.Display.startWrite();
+
   // Show labels on LCD screen, temperature
   M5.Display.setTextColor(COLOR_LABEL, TFT_BLACK);
   M5.Display.setFont(&fonts::Orbitron_Light_24);
   M5.Display.setCursor(20, 14);    
   M5.Display.printf("Temperature");
   M5.Display.setTextColor(COLOR_UNIT, TFT_BLACK);
-  M5.Display.setCursor(250, 78);
+  M5.Display.setCursor(250, 74);
   M5.Display.printf("C");
-  M5.Display.drawCircle(247, 79, 3, COLOR_UNIT);
+  M5.Display.drawCircle(247, 75, 3, COLOR_UNIT);
 
   // Show labels on LCD screen, pressure
   M5.Display.setTextColor(COLOR_LABEL, TFT_BLACK);
   M5.Display.setFont(&fonts::Orbitron_Light_24);
-  M5.Display.setCursor(20, 109);
+  M5.Display.setCursor(20, 106);
   M5.Display.printf("Pressure");
   M5.Display.setTextColor(COLOR_UNIT, TFT_BLACK);
-  M5.Display.setCursor(250, 173);
+  M5.Display.setCursor(250, 166);
   M5.Display.printf("hPa");
 
   // Show function name above Button A and B on LCD screen
@@ -264,6 +308,9 @@ void setup() {
   M5.Display.setTextColor(COLOR_7SEG_ON, TFT_BLACK);
   M5.Display.setCursor(261, 2);
   M5.Display.printf("BATT.");
+
+  // Release LCD control
+  M5.Display.endWrite();
 
   // Create a task combined with a timer
   xTaskCreateUniversal(
@@ -289,7 +336,7 @@ void setup() {
 void loop() {
     // Observe button status to raise of lower flag for recording
     M5.update();
-    if (M5.BtnA.wasClicked()) {
+    if (M5.BtnA.wasClicked() && !isRecording) {
       isRecording = true;
       for (int i = 0; i < 1000; i++) {
         sprintf(fileName, "/R%04d.CSV", i);
@@ -303,7 +350,7 @@ void loop() {
     }
     else if (M5.BtnB.wasClicked()) {
       isRecording = false;
-      file.close();
+      t_rec = 0.0;
     }
 
     delay(10);
