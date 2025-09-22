@@ -334,7 +334,7 @@ void setup() {
 // The loop function
 // ----------------------------------------
 void loop() {
-    // Observe button status to raise of lower flag for recording
+    // Observe button status to raise or lower flag for recording
     M5.update();
     if (M5.BtnA.wasClicked() && !isRecording) {
       isRecording = true;
